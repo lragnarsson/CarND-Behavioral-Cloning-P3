@@ -20,15 +20,16 @@ from keras.layers import Cropping2D, Input, ZeroPadding2D
 from keras import regularizers
 from keras import backend as K
 
-
 # Load csv files and read frame meta data
-def load_csv(data_path="data/", csv_names=["long_driving_log.csv", "reverse_driving_log.csv", "swimming_driving_log.csv", "my_driving_log.csv"] ):
+def load_csv(data_path="data/", csv_names=["driving_log.csv", "correction_log.csv", "correction_log2.csv"]):
     data_samples = []
     for csv_name in csv_names:
         with open(data_path + csv_name) as csvfile:
             reader = csv.reader(csvfile)
+            next(reader)
             for line in reader:
-                if abs(float(line[3])) > 0.1 or random.random() < 0.1: # Remove 90 % of straight-ish line driving
+                keep_prob = 0.4 + 10 * abs(float(line[3])) # Remove much of straight-ish line driving
+                if random.random() < keep_prob: 
                     data_samples.append(line)
     return np.array(data_samples)
 
@@ -56,45 +57,49 @@ def generator(samples, batch_size=64, start_y=80):
             images = []
             angles = []
             for batch_sample in batch_samples:
-                name = './data/IMG/' + batch_sample[0].split('/')[-1]
-                if len(name.split(".")) != 3 or name.split(".")[-1] != "jpg":
-                    continue # Not an image!
-                center_image = cv2.imread(name)
-                center_image = cv2.cvtColor(center_image, cv2.COLOR_BGR2RGB)
-                center_image_flipped = center_image[:, ::-1]
-                steering_angle = float(batch_sample[3])
+                for cam_idx in range(3): # Loop over center, left and right camera
+                    name = './data/IMG/' + batch_sample[cam_idx].split('/')[-1]
+                    if len(name.split(".")) != 3 or name.split(".")[-1] != "jpg":
+                        continue # Not an image!
+                    cam_image = cv2.imread(name)
+                    cam_image = cv2.cvtColor(cam_image, cv2.COLOR_BGR2RGB)
+                    cam_image_flipped = cam_image[:, ::-1]
+                    steering_angle = float(batch_sample[3])
+                    if cam_idx == 1: #Correct if it's left ir right camera:
+                        steering_angle += 0.25
+                    elif cam_idx == 2:
+                        steering_angle -= 0.25
+                    steering_angle = min(1, max(steering_angle, -1)) # Clamp between -1 to 1
 
-                images.append(center_image)
-                angles.append(steering_angle)
-                # Augment with flipped version:
-                images.append(center_image_flipped)
-                angles.append(-steering_angle)
+                    images.append(cam_image)
+                    angles.append(steering_angle)
+                    # Augment with flipped version:
+                    images.append(cam_image_flipped)
+                    angles.append(-steering_angle)
 
             X_train = np.array(images)
             y_train = np.array(angles)
             yield sklearn.utils.shuffle(X_train, y_train)
        
-# Two convolutional layers followed by two fully connected layers    
+# Two convolutional layers followed by three fully connected layers    
 def simplish_conv_model(input_shape=(160, 320, 3), y_crop=(55, 25)):
     new_shape = (input_shape[0] - y_crop[0] - y_crop[1], input_shape[1], input_shape[2])
     model = Sequential()
     model.add(Cropping2D(cropping=(y_crop, (0,0)), input_shape=input_shape))
     
     model.add(Lambda(lambda x: x/255.0 - 0.5, input_shape=new_shape, output_shape=new_shape))
+    model.add(Conv2D(16, (5, 5), padding="valid", activation="elu"))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D((4, 4), (4, 4), 'valid'))
+    
     model.add(Conv2D(64, (5, 5), padding="valid", activation="elu"))
     model.add(BatchNormalization())
-    model.add(MaxPooling2D((3, 3), (3, 3), 'valid'))
-    
-    model.add(Conv2D(256, (5, 5), padding="valid", activation="elu"))
-    model.add(BatchNormalization())
-    model.add(MaxPooling2D((3, 3), (3, 3), 'valid'))
-    model.add(Dropout(0.5))
+    model.add(MaxPooling2D((2, 2), (2, 2), 'valid'))
     
     model.add(Flatten())
-    model.add(Dense(256))
+    model.add(Dense(42))
     model.add(Dropout(0.6))
     
-    model.add(Dense(42))
     model.add(Dense(1, use_bias=False)) # It should be equally likely to turn left and right => no bias.
     return model
 
@@ -107,13 +112,13 @@ def simple_conv_model(input_shape=(160, 320, 3), y_crop=(55, 25)):
     model.add(Lambda(lambda x: x/255.0 - 0.5, input_shape=new_shape, output_shape=new_shape))
     
     # Convolutional layer
-    model.add(Conv2D(16, (5, 5), padding="valid", activation="elu"))
+    model.add(Conv2D(16, (5, 5), padding="valid", activation="tanh"))
     model.add(MaxPooling2D((4, 4), (4, 4), 'valid'))
     model.add(Dropout(0.5)) 
     
     # Fully connected -> steering angle output
     model.add(Flatten())
-    model.add(Dense(1), use_bias=False)
+    model.add(Dense(1, use_bias=False))
     return model
 
 # Transfer learning from https://keras.io/applications/#mobilenet
@@ -190,13 +195,12 @@ def plot_history(history):
  
 #Analyze distribution of steering angles:
 def analyze_dataset(data_path="data/"):
-    csv_files = ["long_driving_log.csv", "reverse_driving_log.csv", "swimming_driving_log.csv", "my_driving_log.csv"] 
-    #csv_files = ["driving_log.csv", "long_driving_log.csv", "reverse_driving_log.csv", "swimming_driving_log.csv", "my_driving_log.csv"] 
+    csv_files = ["driving_log.csv", "correction_log.csv", "correction_log2.csv"] 
     y_all = []
     for csv_file in csv_files:
         csv_data = load_csv(data_path=data_path, csv_names=[csv_file])
         y = []
-        for sample in csv_data[1:]:
+        for sample in csv_data[2:]:
             steering_angle = float(sample[3])
             y.append(steering_angle)
             y.append(-steering_angle)
@@ -209,7 +213,7 @@ def analyze_dataset(data_path="data/"):
 # Load data and train a model
 def load_and_train(model_initializer, data_path="data/"):
     csv_data = load_csv(data_path=data_path)
-    model, history_object = train_model(csv_data, model_initializer, batch_size=64, epochs=5, start_y=80)
+    model, history_object = train_model(csv_data, model_initializer, batch_size=64, epochs=8, start_y=80)
     model.save('model.h5')
     return model, history_object
 
@@ -218,11 +222,12 @@ def load_train_and_plot(data_path="data/"):
     #model_to_use = lambda input_shape: inception_v3_model(input_shape=input_shape, layers_to_train=32)
     #model_to_use = mobile_net_model
     model_to_use = simple_conv_model
+    #model_to_use = simplish_conv_model
     model, history = load_and_train(model_to_use, data_path=data_path)
     plot_history(history)
   
 if __name__ == "__main__":  
     print("Welcome!")
-    #load_train_and_plot()
-    analyze_dataset()
+    load_train_and_plot()
+    #analyze_dataset()
     print("Goodbye!")

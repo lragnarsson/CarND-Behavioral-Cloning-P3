@@ -158,9 +158,35 @@ def simple_conv_model(input_shape=(160, 320, 3), y_crop=(55, 25)):
     return model
 ```
 
+#### Slightly More Complex Convolutional Network
+The fourth and lat approach which was tested was to extends the simple convolutional network with one additional convolutional layer and two additional fully connected ones. However it did not show significant improvements over the simple network.
+
+To combat overfitting, the model uses dropout after the first two fully connected layers.
+
+```python
+# Hello Convolution World. This is the simplest model which was also able to be trained to complete one lap.
+def simple_conv_model(input_shape=(160, 320, 3), y_crop=(55, 25)):
+    new_shape = (input_shape[0] - y_crop[0] - y_crop[1], input_shape[1], input_shape[2])
+    model = Sequential()
+    # pre-processing layers:
+    model.add(Cropping2D(cropping=(y_crop, (0,0)), input_shape=input_shape))
+    model.add(Lambda(lambda x: x/255.0 - 0.5, input_shape=new_shape, output_shape=new_shape))
+    
+    # Convolutional layer
+    model.add(Conv2D(16, (5, 5), padding="valid", activation="tanh"))
+    model.add(MaxPooling2D((4, 4), (4, 4), 'valid'))
+    model.add(Dropout(0.5)) 
+    
+    # Fully connected -> steering angle output
+    model.add(Flatten())
+    model.add(Dense(1), use_bias=False)
+    return model
+```
+
+
 #### 2. Final Model Architecture
 
-The final model architecture (model.py lines 101-117) consisted of a convolution neural network with the following layers
+The final model architecture (model.py lines 106-122) consisted of a convolution neural network with the following layers
 
 | Layer         		|     Description	        					            | 
 |:---------------------:|:---------------------------------------------------------:| 
@@ -204,14 +230,15 @@ The main problem that still kept persisting was that the final model preferred d
 
 The different colors represent different subsets of the data which were all combined together for training and validation later on.
 
-A quick and dirty fix for this was to remove 90 % of data with an absolute steering angle below 0.1. This was done in model.py line 31.
+A quick and dirty fix for this was to remove much of the straight line data. This was done in model.py line 31.
 
 ```python
-if abs(float(line[3])) > 0.1 or random.random() < 0.1:
+keep_prob = 0.4 + 10 * abs(float(line[3])) # Remove much of straight-ish line driving
+if random.random() < keep_prob: 
     data_samples.append(line)
 ```
 The resulting distribution can be seen below.
 
 ![Modified datasets][image4]
 
-This made the model much more eager to turn, which helped it in the sharp corners. The negative side effect was a more snake-like driving style. After doing this the simple model was able to be trained to drive around the track without leaving the road.
+This made the model much more eager to turn, which helped it in the sharp corners. The negative side effect was a more snake-like driving style. After doing this the simple model was able to be trained to drive around the track without leaving the road. However it still came close to the edge a few times without adequate reaction. In order to improve this the dataset was further augmented to use the left and right cameras with a steering angle correction of +- 0.25 compared to the actual steering angle. The idea behind this was to get more training data where the car is steering away from the edge of the road. This data augmentation method greatly improved the performance of trained models.
